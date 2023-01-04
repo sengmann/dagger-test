@@ -1,5 +1,4 @@
 import Client, { connect } from "@dagger.io/dagger"
-import { OnePasswordConnect, ItemBuilder } from "@1password/connect";
 
 const nginxConf = `
 server {
@@ -27,16 +26,21 @@ server {
 // initialize Dagger client
 await connect(async (client: Client) => {
 
-  const onePasswordToken = await client.host().envVariable('ONE_PASSWORD_TOKEN').secret()
-  
-  const op = OnePasswordConnect({
-    serverURL: "http://192.168.178.21:8080",
-    token: await onePasswordToken.plaintext(),
-    keepAlive: true,
-  });
-  
-  const foo = await op.getItemById('ogfbxdkojzu42lrtig3xeezk6q' ,'ltvff2yrapkarbzqno6jfbqfsy')
-  const pw = foo.fields?.find(field => field.id === 'password')?.value ?? ''
+  const secretsTemplateFile = client.host().directory('.', { include: ['secrets.tpl.json'] }).file('secrets.tpl.json')
+
+  // can't use ?? because not set variable is delivered as empty string instead of null or undefined
+  const onePasswordHost = (await client.host().envVariable('ONE_PASSWORD_HOST').value()) || "http://192.168.178.21:8080"
+  const onePasswordToken = client.host().envVariable('ONE_PASSWORD_TOKEN').secret()
+
+  const secretManager = client.container().from('1password/op:2')
+    .withSecretVariable('OP_CONNECT_TOKEN', onePasswordToken)
+    .withEnvVariable('OP_CONNECT_HOST', onePasswordHost)
+    .withFile('/tmp/secrets.tpl.json', secretsTemplateFile)
+    .withExec(['op', 'inject', '-i', '/tmp/secrets.tpl.json', '-o', '/tmp/secrets.json']);
+
+  const secrets = secretManager.file('/tmp/secrets.json')
+  // access secrets direct
+  console.log(JSON.parse(await secrets.contents()).foo.username)
 
   const repoUrl = 'git@github.com:sengmann/dagger-ui-test.git'
   const sshAuthSockPath = process.env.SSH_AUTH_SOCK?.toString() ?? ""
@@ -56,7 +60,12 @@ await connect(async (client: Client) => {
     .withDirectory('/workdir', repo.directory('/'))
     .withWorkdir('/workdir')
     .withExec(['npm', 'ci'])
-    .withExec(['npm', 'run', 'ng', '--', 'run', 'dagger-ui-test:build:production '])
+    .withExec(['npm', 'run', 'ng', '--', 'run', 'dagger-ui-test:build:production'])
+    // or pass the file into a container
+    .withFile('/tmp/secrets.json', secrets)
+    // or pass file as a secret into container
+    .withMountedSecret('/tmp/secrets2.json', secrets.secret())
+
 
   console.log(await builder.stdout())
 
@@ -65,7 +74,6 @@ await connect(async (client: Client) => {
     .withNewFile('/etc/nginx/conf.d/default.conf', { contents: nginxConf })
     .withDirectory('/usr/share/nginx/html', builder.directory('/workdir/dist/apps/dagger-ui-test'))
     .withSecretVariable('ONE_PASSWORD_TOKEN', onePasswordToken)
-    .withSecretVariable('FOO', pw)
 
   await runner.publish('sirion182/dagger-ui-test:latest')
 
