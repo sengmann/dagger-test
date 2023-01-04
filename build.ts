@@ -1,4 +1,5 @@
 import Client, { connect } from "@dagger.io/dagger"
+import { OnePasswordConnect, ItemBuilder } from "@1password/connect";
 
 const nginxConf = `
 server {
@@ -25,6 +26,18 @@ server {
 
 // initialize Dagger client
 await connect(async (client: Client) => {
+
+  const onePasswordToken = await client.host().envVariable('ONE_PASSWORD_TOKEN').secret()
+  
+  const op = OnePasswordConnect({
+    serverURL: "http://192.168.178.21:8080",
+    token: await onePasswordToken.plaintext(),
+    keepAlive: true,
+  });
+  
+  const foo = await op.getItemById('ogfbxdkojzu42lrtig3xeezk6q' ,'ltvff2yrapkarbzqno6jfbqfsy')
+  const pw = foo.fields?.find(field => field.id === 'password')?.value ?? ''
+
   const repoUrl = 'git@github.com:sengmann/dagger-ui-test.git'
   const sshAuthSockPath = process.env.SSH_AUTH_SOCK?.toString() ?? ""
   const sshAgentSocketID = await client.host().unixSocket(sshAuthSockPath).id()
@@ -51,6 +64,8 @@ await connect(async (client: Client) => {
     .from('nginx')
     .withNewFile('/etc/nginx/conf.d/default.conf', { contents: nginxConf })
     .withDirectory('/usr/share/nginx/html', builder.directory('/workdir/dist/apps/dagger-ui-test'))
+    .withSecretVariable('ONE_PASSWORD_TOKEN', onePasswordToken)
+    .withSecretVariable('FOO', pw)
 
   await runner.publish('sirion182/dagger-ui-test:latest')
 
